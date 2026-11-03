@@ -8,6 +8,7 @@ import java.util.function.LongSupplier;
 /** Bounded, immutable messages cross threads; Minecraft objects never enter the Discord worker. */
 final class ChatRelay {
     static final int CAPACITY = 100;
+    static final int INCOMING_TEXT_LIMIT = 900;
     private static final long EXPIRES = 60_000_000_000L;
     private final String guildId;
     private final ChatConfig config;
@@ -47,7 +48,7 @@ final class ChatRelay {
 
     synchronized boolean discord(String guild, String channel, boolean bot, boolean webhook, String name, String text) {
         if (closed || !config.enabled || !config.discordToMinecraft || bot || webhook || !guildId.equals(guild) || !config.channelId.equals(channel)) return false;
-        String content = ChatText.limit(ChatText.clean(text), 900);
+        String content = ChatText.limit(ChatText.clean(text), INCOMING_TEXT_LIMIT);
         if (content.isBlank()) return false;
         if (incoming.size() >= CAPACITY) { dropped++; return false; }
         String formatted = ChatText.limit(ChatText.render(config.discordToMinecraftFormat,

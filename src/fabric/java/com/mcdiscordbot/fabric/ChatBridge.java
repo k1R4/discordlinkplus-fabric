@@ -59,9 +59,8 @@ final class ChatBridge extends ListenerAdapter implements AutoCloseable {
         channelMessages.incrementAndGet();
         if (event.getAuthor().isBot() || event.getMessage().isWebhookMessage()) { ignoredBotMessages.incrementAndGet(); return; }
         String name = event.getMember() == null ? event.getAuthor().getName() : event.getMember().getEffectiveName();
-        StringBuilder text = new StringBuilder(event.getMessage().getContentDisplay());
-        event.getMessage().getAttachments().stream().limit(5).forEach(attachment -> text.append(" [Attachment] ").append(attachment.getUrl()));
-        relay.discord(event.getGuild().getId(), event.getChannel().getId(), false, false, name, text.toString());
+        String text = DiscordAttachments.format(event.getMessage().getContentDisplay(), event.getMessage().getAttachments());
+        relay.discord(event.getGuild().getId(), event.getChannel().getId(), false, false, name, text);
     }
 
     void work() {

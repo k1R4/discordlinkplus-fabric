@@ -131,6 +131,85 @@ class ChatBridgeTest {
         }
     }
 
+    @Test void incomingUploadsUseCompactLabelsAndPreserveTheCaptionAndNormalLinks() {
+        assertIncoming("Look here https://example.org/farm", "Look here https://example.org/farm [Image] [GIF] [Video] [File: farm.zip]",
+            attachment("farm.png", "image/png"), attachment("dance.GIF", "image/gif"),
+            attachment("tour.mp4", "video/mp4"), attachment("farm.zip", "application/zip"));
+    }
+
+    @Test void attachmentOnlyMessagesAndMoreThanFiveUploadsAreNotLost() {
+        assertIncoming("", "[Image]", attachment("farm.webp", "image/webp"));
+        assertIncoming("", "[Image] [Image] [Image] [Image] [Image] [Image]",
+            java.util.stream.IntStream.range(0, 6).mapToObj(i -> attachment(i + ".png", null)).toArray(Message.Attachment[]::new));
+    }
+
+    @Test void missingMediaTypesUseExtensionsAndOtherUploadsKeepTheirFileNames() {
+        assertIncoming("", "[GIF] [Video] [Image] [File: notes.txt]",
+            attachment("dance.GIF", null), attachment("tour.MP4", null), attachment("farm.PNG", null), attachment("notes.txt", null));
+    }
+
+    @Test void extensionlessFilesAndExplicitMimeTypesDoNotDependOnTheExtension() {
+        assertIncoming("", "[File: LICENSE] [Image] [Video] [Image] [File: report.png]",
+            attachment("LICENSE", null), attachment("upload", "image/jpeg"), attachment("clip", "video/mp4"),
+            attachment("photo.PNG", "application/octet-stream"), attachment("report.png", "text/plain"));
+    }
+
+    @Test void longCaptionsLeaveRoomForAllUploadLabels() {
+        var network = new Network(false);
+        try (var bridge = new ChatBridge(config())) {
+            bridge.onMessageReceived(network.event(false, false, "x".repeat(1000), attachment("farm.png", "image/png")));
+            String text = bridge.relay().nextIncoming().text();
+            assertEquals("[Discord] Friend: " + "x".repeat(891) + "\u2026 [Image]", text);
+        }
+    }
+
+    @Test void fileNamesAreCleanedAndBoundedWithoutBreakingTheLabel() {
+        assertIncoming("", "[File: notes .txt]", attachment("notes\n\u00a7c.txt", "text/plain"));
+        var network = new Network(false);
+        try (var bridge = new ChatBridge(config())) {
+            bridge.onMessageReceived(network.event(false, false, "", attachment("x".repeat(300) + ".zip", null)));
+            String text = bridge.relay().nextIncoming().text();
+            assertTrue(text.startsWith("[Discord] Friend: [File: "));
+            assertTrue(text.endsWith("\u2026]"));
+            assertTrue(text.length() < 120);
+        }
+    }
+
+    @Test void gifPickerLinksAreReplacedInPlaceWithoutLosingTextOrPunctuation() {
+        assertIncoming("Nice! https://tenor.com/view/happy-dance-gif-12345", "Nice! [GIF]");
+        assertIncoming("(https://www.tenor.com/view/happy-12345), wow", "([GIF]), wow");
+        assertIncoming("https://giphy.com/gifs/happy-abc123 https://media.giphy.com/media/abc123/giphy.gif", "[GIF] [GIF]");
+        assertIncoming("https://media.tenor.com/abc123/hello.gif", "[GIF]");
+    }
+
+    @Test void ordinaryLinksAndLookalikeGifHostsStayUnchanged() {
+        for (String url : List.of("https://example.org/picture.gif", "https://tenor.com/search/cats-gifs",
+            "https://giphy.com/", "https://tenor.com.evil.example/view/cat-123", "https://evil.example/tenor.com/view/cat-123",
+            "https://tenor.com@evil.example/view/cat-123", "https://example.org/?next=https://tenor.com/view/cat-123"))
+            assertIncoming("See " + url, "See " + url);
+    }
+
+    @Test void pickerLinksPreserveSurroundingMarkdownAndQuotes() {
+        for (String wrapper : List.of("**", "__", "~~", "*", "_", "`", "\"", "'")) {
+            assertIncoming("Nice " + wrapper + "https://tenor.com/view/happy-12345" + wrapper + ".",
+                "Nice " + wrapper + "[GIF]" + wrapper + ".");
+        }
+    }
+
+    private void assertIncoming(String content, String expected, Message.Attachment... attachments) {
+        var network = new Network(false);
+        try (var bridge = new ChatBridge(config())) {
+            bridge.onMessageReceived(network.event(false, false, content, attachments));
+            assertEquals("[Discord] Friend: " + expected, bridge.relay().nextIncoming().text());
+            assertNull(bridge.relay().nextOutgoing());
+        }
+    }
+
+    private static Message.Attachment attachment(String name, String contentType) {
+        String url = "https://cdn.discordapp.com/attachments/123/456/upload?ex=private-signature";
+        return new Message.Attachment(1L, url, url, name, contentType, null, 100, 32, 32, 0, false, null, 0, null, null);
+    }
+
     @Test void reservedPlayerNamesUseBotFallbackWithoutLosingThePlayerName() {
         var network = new Network(false);
         try (var bridge = new ChatBridge(config())) {
@@ -214,7 +293,7 @@ class ChatBridgeTest {
             });
         }
 
-        MessageReceivedEvent event(boolean bot, boolean viaWebhook, String content) {
+        MessageReceivedEvent event(boolean bot, boolean viaWebhook, String content, Message.Attachment... attachments) {
             User author = stub(User.class, (name, args) -> switch (name) { case "isBot" -> bot; case "getName" -> "Friend"; default -> null; });
             Member member = stub(Member.class, (name, args) -> name.equals("getEffectiveName") ? "Friend" : null);
             Message message = stub(Message.class, (name, args) -> switch (name) {
@@ -225,7 +304,7 @@ class ChatBridgeTest {
                 case "getGuild" -> guild;
                 case "getContentDisplay" -> content;
                 case "isWebhookMessage" -> viaWebhook;
-                case "getAttachments" -> List.of();
+                case "getAttachments" -> List.of(attachments);
                 default -> null;
             });
             return new MessageReceivedEvent(client, 1, message);
